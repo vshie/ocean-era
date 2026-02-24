@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import shutil
+import tempfile
 import urllib.request
+
+from PIL import Image, ImageOps
 
 
 PLOTS = {
@@ -32,86 +36,73 @@ def fetch(url: str, out_path: str):
     urllib.request.urlretrieve(url, out_path)
 
 
+def bundle(panels: list[str], out: str) -> None:
+    images = [Image.open(p).convert("RGBA") for p in panels if os.path.exists(p)]
+    if not images:
+        raise RuntimeError("No panel images were produced")
+
+    target_w = max(im.width for im in images)
+    target_h = max(im.height for im in images)
+
+    normalized = []
+    for im in images:
+        fitted = ImageOps.contain(im, (target_w, target_h), method=Image.Resampling.LANCZOS)
+        panel = Image.new("RGBA", (target_w, target_h), (255, 255, 255, 255))
+        x = (target_w - fitted.width) // 2
+        y = (target_h - fitted.height) // 2
+        panel.paste(fitted, (x, y), fitted)
+        normalized.append(panel)
+
+    pad = 12
+    canvas = Image.new(
+        "RGBA",
+        (target_w, target_h * len(normalized) + pad * (len(normalized) - 1)),
+        (255, 255, 255, 255),
+    )
+    y = 0
+    for panel in normalized:
+        canvas.paste(panel, (0, y), panel)
+        y += target_h + pad
+    canvas.convert("RGB").save(out)
+
+
 def main() -> int:
     tz = dt.timezone(dt.timedelta(hours=-10))  # HST
     now = dt.datetime.now(tz)
 
-    # Write outputs to repo-root volcano_report_out/, not inside scripts/
-    repo_root = os.path.dirname(os.path.dirname(__file__))
-    out_dir = os.path.join(repo_root, "volcano_report_out")
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "volcano_report_out")
     os.makedirs(out_dir, exist_ok=True)
-
-    paths = {}
-    for k, url in PLOTS.items():
-        p = os.path.join(out_dir, f"{k}.png")
-        fetch(url, p)
-        paths[k] = p
-
-    # Run predictor (imports local module)
-    from volcano_predict_timeseries import main as predict_main
-
-    out_prefix = os.path.join(out_dir, "kilauea_predict")
-    # blue_now anchored to -13.5 µrad by convention we used with Tony
-    import sys
-    argv = [
-        "--month",
-        paths["tilt_month"],
-        "--three-month",
-        paths["tilt_3month"],
-        "--blue-now",
-        "-13.5",
-        "--out-prefix",
-        out_prefix,
-    ]
-    # call predictor main
-    predict_main(argv)
-
-    # Create a single bundled PNG (so we can send one file in chat instead of multiple uploads)
     bundle_path = os.path.join(out_dir, "kilauea_predict_bundle.png")
-    try:
-        from PIL import Image, ImageOps
 
-        bundle_inputs = [
+    tmp = tempfile.mkdtemp(prefix="volcano_report_")
+    try:
+        paths = {}
+        for k, url in PLOTS.items():
+            p = os.path.join(tmp, f"{k}.png")
+            fetch(url, p)
+            paths[k] = p
+
+        from volcano_predict_timeseries import main as predict_main
+
+        out_prefix = os.path.join(tmp, "kilauea_predict")
+        predict_main([
+            "--month", paths["tilt_month"],
+            "--three-month", paths["tilt_3month"],
+            "--blue-now", "-13.5",
+            "--out-prefix", out_prefix,
+        ])
+
+        bundle([
             f"{out_prefix}.png",
             f"{out_prefix}_3month_threshold_overlay.png",
             f"{out_prefix}_30day_cyan_overlay.png",
-        ]
-        images = [Image.open(p).convert("RGBA") for p in bundle_inputs if os.path.exists(p)]
-        if images:
-            # Make every panel the same size (Tony prefers the larger size).
-            # Strategy: take the max WxH across all plots, scale each plot to fit,
-            # then pad with white to exactly the target size.
-            target_w = max(im.width for im in images)
-            target_h = max(im.height for im in images)
+        ], bundle_path)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
-            normalized = []
-            for im in images:
-                fitted = ImageOps.contain(im, (target_w, target_h), method=Image.Resampling.LANCZOS)
-                panel = Image.new("RGBA", (target_w, target_h), (255, 255, 255, 255))
-                x = (target_w - fitted.width) // 2
-                y = (target_h - fitted.height) // 2
-                panel.paste(fitted, (x, y), fitted)
-                normalized.append(panel)
-
-            pad = 12
-            out_w = target_w
-            out_h = target_h * len(normalized) + pad * (len(normalized) - 1)
-            canvas = Image.new("RGBA", (out_w, out_h), (255, 255, 255, 255))
-            y = 0
-            for panel in normalized:
-                canvas.paste(panel, (0, y), panel)
-                y += target_h + pad
-            canvas.convert("RGB").save(bundle_path)
-    except Exception:
-        # Non-fatal: Pillow may not be installed, or a file may be missing.
-        bundle_path = ""
-
-    print("\nVOLCANO REPORT — Kīlauea")
+    print(f"\nVOLCANO REPORT — Kīlauea")
     print(f"Generated: {now.strftime('%Y-%m-%d %H:%M %Z')}")
-    print("Includes: tilt 2-day, tilt week, tilt month, plus prediction plots")
-    print(f"Output dir: {out_dir}")
-    if bundle_path:
-        print(f"Bundle image: {bundle_path}")
+    print(f"Bundle image: {bundle_path}")
 
     return 0
 

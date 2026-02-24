@@ -77,6 +77,21 @@ def extract_blue_trace(im: Image.Image, crop=CROP):
     return xs, ys
 
 
+def last_real_blue_index(im: Image.Image, crop=CROP) -> int:
+    """Return the index (into the xs/ys arrays from extract_blue_trace) of the
+    rightmost column that actually contains blue pixels, before interpolation."""
+    rgb = np.array(im.convert("RGB"))
+    x0, y0, x1, y1 = crop
+    sub = rgb[y0:y1, x0:x1, :]
+    r, g, b = sub[:, :, 0].astype(np.int16), sub[:, :, 1].astype(np.int16), sub[:, :, 2].astype(np.int16)
+    mask = (b > 130) & (b - r > 40) & (b - g > 30)
+    has_blue = mask.any(axis=0)
+    indices = np.where(has_blue)[0]
+    if indices.size == 0:
+        return mask.shape[1] - 1
+    return int(indices[-1])
+
+
 def line_through(t1, y1, t2, y2) -> Line:
     t1 = float(t1)
     t2 = float(t2)

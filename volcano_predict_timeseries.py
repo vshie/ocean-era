@@ -38,6 +38,7 @@ from PIL import Image, ImageDraw
 from volcano_threshold_overlay_v2 import (
     CROP,
     extract_blue_trace,
+    last_real_blue_index,
     moving_average,
     detect_drops,
     peaks_before_drops,
@@ -109,22 +110,11 @@ def overlay_three_month_threshold(im: Image.Image, thr_fit, out_path: str):
 
 
 def overlay_month_cyan(im: Image.Image, x_tr, y_tr, x_now, y_now, out_path: str):
-    """Overlay the cyan ramp fit, but *clip* it to the plot's right edge.
-
-    The USGS month plot has a black vertical line at the right edge of the plot area.
-    We want the cyan line to stop exactly at that edge (not extend past it).
-    """
+    """Overlay the cyan ramp fit, clipped to the rightmost blue data point."""
 
     x0, y0, x1, y1 = CROP
-    x_right = float(x1 - 1)
-
-    # Project the cyan line to the right edge in pixel space.
-    # Use the line defined by (trough) -> (now).
-    if abs(x_now - x_tr) > 1e-6:
-        t = (x_right - x_tr) / (x_now - x_tr)
-        y_right = y_tr + t * (y_now - y_tr)
-    else:
-        y_right = y_now
+    x_right = min(float(x_now), float(x1 - 1))
+    y_right = y_now
 
     out = im.convert("RGBA")
     d = ImageDraw.Draw(out, "RGBA")
@@ -277,8 +267,8 @@ def main(argv=None):
     out_thr = args.out_prefix + "_3month_threshold_overlay.png"
     out_cyan = args.out_prefix + "_30day_cyan_overlay.png"
     overlay_three_month_threshold(im_3, Line(thr_px.m, thr_px.c), out_thr)
-    # Use the rightmost extracted point as "now" in pixel space.
-    idx_now = int(np.nanargmax(xm))
+    # Use the rightmost actual blue pixel (not interpolated) as "now".
+    idx_now = last_real_blue_index(im_m)
     overlay_month_cyan(
         im_m,
         float(xm[idx_tr]),
